@@ -8,3 +8,14 @@
 Thumbs.db
 Desktop.ini
 
+# Dependencies and generated framework files
+node_modules/
+.next/
+.vinext/
+.wrangler/
+.sites-runtime/
+
+# Local workspace files
+work/
+outputs/
+
