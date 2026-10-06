@@ -8,14 +8,29 @@
 Thumbs.db
 Desktop.ini
 
-# Dependencies and generated framework files
+# Dependencies
 node_modules/
+
+# Next.js / frontend generated files
 .next/
 .vinext/
 .wrangler/
 .sites-runtime/
+dist/
+
+# Python generated files
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Python virtual environments
+venv/
+.venv/
+env/
+
+# TypeScript build cache
+*.tsbuildinfo
 
 # Local workspace files
 work/
 outputs/
-
