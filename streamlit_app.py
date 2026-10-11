@@ -73,6 +73,7 @@ app_mode = st.sidebar.radio(
         "📄 PDF Analyzer & Reducer",
         "💬 Prompt Optimizer",
         "🔍 Document Q&A (RAG)",
+        "🎯 Context Optimizer (Member 3)",
         "🩺 Backend Health",
     ],
 )
@@ -88,7 +89,13 @@ st.sidebar.info(
     "- Query analyzer (intent & complexity)\n"
     "- Dense vector embeddings\n"
     "- FAISS cosine vector storage\n"
-    "- Semantic chunk retrieval"
+    "- Semantic chunk retrieval\n\n"
+    "**Member 3: Token Optimization**\n"
+    "- Query-intent adaptive token budgeting\n"
+    "- Redundancy removal & deduplication\n"
+    "- Budget-bounded chunk ranking\n"
+    "- Structured Markdown context reconstruction\n"
+    "- Context efficiency report generation"
 )
 
 # -----------------------------------------------------------------------------
@@ -284,32 +291,29 @@ elif app_mode == "🔍 Document Q&A (RAG)":
                         st.session_state["rag_doc_id"] = doc_name_input
                         st.success(f"Indexed {res['chunks_indexed']} chunks via local engine!")
         else:
-            st.caption("Upload and analyze a PDF in 'PDF Analyzer' first to generate chunks, or use sample indexing below:")
-            if st.button("📥 Load Sample Paper Chunks"):
-                sample_chunks = [
-                    {
-                        "chunk_id": 0,
-                        "text": "The Transformer model architecture relies entirely on self-attention mechanisms, dispensing with recurrence and convolutions.",
-                        "section": "Abstract",
-                        "tokens": 20,
-                    },
-                    {
-                        "chunk_id": 1,
-                        "text": "An attention function maps a query and a set of key-value pairs to an output, computed as a weighted sum of the values.",
-                        "section": "Model Architecture",
-                        "tokens": 25,
-                    },
-                    {
-                        "chunk_id": 2,
-                        "text": "The Transformer achieves 28.4 BLEU on the English-to-German translation task and 41.0 BLEU on English-to-French.",
-                        "section": "Results",
-                        "tokens": 22,
-                    },
-                ]
+            # Load real documents indexed in database
+            db_docs = []
+            try:
+                r_docs = requests.get(f"{API_URL}/api/documents", timeout=5)
+                if r_docs.status_code == 200:
+                    raw_docs = r_docs.json().get("documents", [])
+                    db_docs = [d["document_id"] if isinstance(d, dict) else str(d) for d in raw_docs]
+            except Exception:
+                pass
+
+            if not db_docs:
                 rtr = get_local_retriever()
-                rtr.index_document(sample_chunks, document_id="sample_transformer")
-                st.session_state["rag_doc_id"] = "sample_transformer"
-                st.success("Loaded and indexed sample transformer paper chunks!")
+                raw_docs = rtr.list_documents()
+                db_docs = [d["document_id"] if isinstance(d, dict) else str(d) for d in raw_docs]
+
+            if db_docs:
+                st.caption("Indexed documents available in SQLite database:")
+                selected_doc = st.selectbox("Select document from database:", options=db_docs)
+                if st.button("📂 Load Selected Document"):
+                    st.session_state["rag_doc_id"] = selected_doc
+                    st.success(f"Active document set to '{selected_doc}'!")
+            else:
+                st.info("No documents indexed in database yet. Upload and analyze a PDF in '📄 PDF Analyzer' first.")
 
         top_k_override = st.slider("Top K Results", min_value=1, max_value=10, value=3)
 
@@ -380,7 +384,82 @@ elif app_mode == "🔍 Document Q&A (RAG)":
                         st.error(q_res.get("error", "No results found."))
 
 # -----------------------------------------------------------------------------
-# Tool 4: Backend Health
+# Tool 4: Context Optimizer (Member 3)
+# -----------------------------------------------------------------------------
+elif app_mode == "🎯 Context Optimizer (Member 3)":
+    st.markdown('<div class="main-header">Intent-Aware <span style="color: #6d7d17;">Context Optimization</span></div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-header">Member 3 Engine: Adaptive token budgeting, redundancy removal, and structured context reconstruction.</div>', unsafe_allow_html=True)
+
+    active_doc_id = st.session_state.get("rag_doc_id")
+    pdf_tokens = st.session_state.get("pdf_result", {}).get("original_tokens", 0)
+
+    c_opt1, c_opt2 = st.columns([1, 1.8], gap="large")
+
+    with c_opt1:
+        st.subheader("Optimization Parameters")
+        target_doc = st.text_input("Indexed Document ID", value=active_doc_id or "sample_transformer")
+        user_prompt = st.text_area("User Query / Task Prompt", value="Explain the Transformer architecture and attention mechanism in detail.")
+        custom_budget = st.number_input("Custom Token Budget Cap (0 = Auto Adaptive)", min_value=0, max_value=10000, value=0, step=100)
+
+        opt_btn = st.button("⚡ Run Context Optimization", type="primary", use_container_width=True, disabled=not user_prompt.strip())
+
+    with c_opt2:
+        if opt_btn and user_prompt.strip():
+            with st.spinner("Executing Member 3 Optimization Pipeline..."):
+                opt_data = None
+                try:
+                    payload = {
+                        "document_id": target_doc.strip(),
+                        "query": user_prompt.strip(),
+                        "original_doc_tokens": pdf_tokens,
+                        "max_budget": custom_budget if custom_budget > 0 else None,
+                    }
+                    res = requests.post(f"{API_URL}/api/optimize-context", json=payload, timeout=20)
+                    if res.status_code == 200:
+                        opt_data = res.json()
+                except Exception:
+                    pass
+
+                if not opt_data:
+                    try:
+                        rtr = get_local_retriever()
+                        if rtr.has_document(target_doc.strip()):
+                            rag_res = rtr.retrieve(user_prompt.strip(), document_id=target_doc.strip(), top_k=15)
+                            from backend.token_optimizer import token_optimizer
+                            opt_data = token_optimizer.optimize_context(
+                                retrieved_chunks=rag_res.get("retrieved_chunks", []),
+                                query_analysis=rag_res.get("query_analysis", {}),
+                                total_analyzed_chunks=len(rag_res.get("retrieved_chunks", [])),
+                                original_doc_tokens=pdf_tokens or 2000,
+                                max_budget_override=custom_budget if custom_budget > 0 else None,
+                                query=user_prompt.strip(),
+                            )
+                    except Exception as ex:
+                        st.error(f"Optimization error: {ex}")
+
+                if opt_data:
+                    rep = opt_data.get("report", {})
+                    st.subheader("📊 Context Efficiency Report")
+
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("Original Tokens", rep.get("original_document_tokens", 0))
+                    m2.metric("Optimized Context", rep.get("optimized_context_tokens", 0))
+                    m3.metric("Token Reduction", f"{rep.get('token_reduction_percent', 0.0)}%")
+                    m4.metric("Tokens Saved", rep.get("tokens_saved", 0))
+
+                    st.markdown("---")
+                    col_info1, col_info2, col_info3 = st.columns(3)
+                    col_info1.write(f"**Query Intent:** `{str(rep.get('query_intent', 'N/A')).capitalize()}`")
+                    col_info2.write(f"**Query Complexity:** `{str(rep.get('query_complexity', 'N/A')).capitalize()}`")
+                    col_info3.write(f"**Redundancies Purged:** `{rep.get('redundancy_purged_count', 0)}` chunks")
+
+                    st.markdown("---")
+                    st.subheader("📝 Reconstructed Markdown Context")
+                    markdown_content = opt_data.get("reconstructed_markdown", "")
+                    st.code(markdown_content, language="markdown")
+
+# -----------------------------------------------------------------------------
+# Tool 5: Backend Health
 # -----------------------------------------------------------------------------
 elif app_mode == "🩺 Backend Health":
     st.subheader("Backend Diagnostics")

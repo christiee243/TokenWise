@@ -18,15 +18,16 @@ if hasattr(sys.stderr, "reconfigure"):
 # Ensure backend directory is in path
 sys.path.insert(0, os.path.dirname(__file__))
 
-import fitz
+import pymupdf
 from pdf_processor import process_pdf
 from prompt_optimizer import optimize_prompt
 from rag import RAGRetriever
+from token_optimizer import token_optimizer
 
 
 def test_pipeline():
     print("=" * 60)
-    print("TokenWise Full Pipeline Integration Test (M1 + M2)")
+    print("TokenWise Full Pipeline Integration Test (M1 + M2 + M3)")
     print("=" * 60)
 
     # 1. Test prompt optimizer (M1)
@@ -43,7 +44,7 @@ def test_pipeline():
 
     # 2. Test PDF processor with an in-memory generated PDF (M1)
     print("\n--- 2. Testing PDF Processing & Chunking (M1) ---")
-    doc = fitz.open()
+    doc = pymupdf.open()
     page1 = doc.new_page()
     page1.insert_text((50, 50), "Document Header - Page 1", fontsize=9)
     page1.insert_text((50, 100), "Attention Is All You Need", fontsize=20)
@@ -102,10 +103,31 @@ def test_pipeline():
     print(f"\nQuery: '{query2}'")
     print(f"Retrieved top match: § {q2_res['retrieved_chunks'][0]['metadata']['section']} (Score: {q2_res['retrieved_chunks'][0]['relevance_score']:.4f})")
     assert q2_res["num_chunks_retrieved"] > 0
-    print("✓ RAG Retriever & Semantic Search: PASSED")
+    # 4. Test Token Optimization & Context Report (M3)
+    print("\n--- 4. Testing Token Optimization & Efficiency Report (M3) ---")
+    opt_res = token_optimizer.optimize_context(
+        retrieved_chunks=q1_res["retrieved_chunks"],
+        query_analysis=q1_res["query_analysis"],
+        total_analyzed_chunks=index_res["chunks_indexed"],
+        original_doc_tokens=pdf_res["original_tokens"],
+        query=query1,
+    )
+
+    report = opt_res["report"]
+    print(f"Original Doc Tokens: {report['original_document_tokens']}")
+    print(f"Target Budget:       {report['target_budget']}")
+    print(f"Optimized Context:   {report['optimized_context_tokens']}")
+    print(f"Tokens Saved:        {report['tokens_saved']} ({report['token_reduction_percent']}%)")
+    print(f"Chunks Selected:     {report['chunks_selected']} / {report['chunks_analyzed']}")
+    print(f"Reconstructed Markdown Preview:\n{opt_res['reconstructed_markdown'][:200]}...\n")
+
+    assert report["optimized_context_tokens"] > 0
+    assert report["token_reduction_percent"] >= 0
+    assert "reconstructed_markdown" in opt_res
+    print("✓ Token Optimization Engine (M3): PASSED")
 
     print("\n" + "=" * 60)
-    print("SUCCESS: Full M1 + M2 Pipeline Verified!")
+    print("SUCCESS: Full M1 + M2 + M3 Pipeline Verified!")
     print("=" * 60)
 
 

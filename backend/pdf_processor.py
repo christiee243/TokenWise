@@ -8,7 +8,7 @@ import io
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-import fitz  # PyMuPDF
+import pymupdf
 import tiktoken
 
 # Initialize tokenizer (cl100k_base used by GPT-4, GPT-3.5-Turbo, etc.)
@@ -102,7 +102,7 @@ def _detect_and_remove_headers_footers(pages_text: List[str]) -> List[str]:
     return cleaned_pages
 
 
-def _extract_page_content_pymupdf(page: fitz.Page) -> Tuple[str, int]:
+def _extract_page_content_pymupdf(page: pymupdf.Page) -> Tuple[str, int]:
     """
     Extracts text, headings, and tables from a PyMuPDF page, structuring into Markdown.
     Returns (page_markdown, table_count).
@@ -328,7 +328,7 @@ def process_pdf(
     5. Generate semantic chunks for Member 2's RAG system.
     6. Return token counts and reduction analytics.
     """
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
     page_count = len(doc)
     total_tables = 0
     raw_pages: List[str] = []
@@ -382,4 +382,5 @@ def process_pdf(
         "table_count": total_tables,
         "chunk_count": len(chunks),
         "chunks": chunks,
+        "is_scanned": len(raw_full_text.strip()) == 0,
     }

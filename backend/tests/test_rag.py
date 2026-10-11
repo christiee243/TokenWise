@@ -8,6 +8,7 @@ Run: python -m pytest backend/tests/test_rag.py -v
 
 import sys
 import os
+import tempfile
 
 # Ensure UTF-8 output on Windows consoles
 if hasattr(sys.stdout, "reconfigure"):
@@ -293,6 +294,35 @@ def test_retriever_document_management():
     print("  ✓ Document management: PASSED")
 
 
+def test_retriever_persistence():
+    """Indexed documents should remain available after the retriever restarts."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        database_path = os.path.join(temp_dir, "tokenwise.sqlite3")
+        retriever = RAGRetriever(database_path=database_path)
+        retriever.index_document(SAMPLE_CHUNKS[:3], document_id="persisted_doc")
+        retriever.close()
+
+        restarted_retriever = RAGRetriever(database_path=database_path)
+        assert restarted_retriever.has_document("persisted_doc")
+        documents = restarted_retriever.list_documents()
+        assert documents == [{"document_id": "persisted_doc", "chunks_indexed": 3}]
+
+        result = restarted_retriever.retrieve(
+            "How does attention work?", document_id="persisted_doc"
+        )
+        assert result["num_chunks_retrieved"] > 0
+        assert "error" not in result
+
+        restarted_retriever.remove_document("persisted_doc")
+        restarted_retriever.close()
+
+        verify_retriever = RAGRetriever(database_path=database_path)
+        assert not verify_retriever.has_document("persisted_doc")
+        verify_retriever.close()
+
+    print("  ✓ SQLite persistence across restarts: PASSED")
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # Runner
 # ═════════════════════════════════════════════════════════════════════════════
@@ -318,6 +348,7 @@ def run_all_tests():
     test_retriever_index_and_retrieve()
     test_retriever_missing_document()
     test_retriever_document_management()
+    test_retriever_persistence()
 
     print("\n" + "=" * 60)
     print("ALL M2 TESTS PASSED ✓")

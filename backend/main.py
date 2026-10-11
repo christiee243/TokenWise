@@ -5,16 +5,30 @@ Exposes endpoints for the Next.js frontend and Member 2/4 integration.
 M2 addition: RAG retrieval endpoints for document indexing and semantic search.
 """
 
+import os
+import sys
 import logging
 from typing import Any, Dict, List, Optional
+
+# Ensure backend directory is in python sys.path for IDE linter & CLI execution
+backend_dir = os.path.dirname(os.path.abspath(__file__))
+if backend_dir not in sys.path:
+    sys.path.insert(0, backend_dir)
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from pdf_processor import process_pdf
-from prompt_optimizer import optimize_prompt
-from rag import RAGRetriever
+try:
+    from pdf_processor import process_pdf
+    from prompt_optimizer import optimize_prompt
+    from rag import RAGRetriever
+    from token_optimizer import token_optimizer
+except ImportError:
+    from backend.pdf_processor import process_pdf
+    from backend.prompt_optimizer import optimize_prompt
+    from backend.rag import RAGRetriever
+    from backend.token_optimizer import token_optimizer
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -42,7 +56,12 @@ app.add_middleware(
 # ── Singleton RAG Retriever ──────────────────────────────────────────────────
 # Shared instance so the embedding model is loaded once and indexes persist
 # across requests for the lifetime of the server process.
-rag_retriever = RAGRetriever()
+rag_retriever = RAGRetriever(
+    database_path=os.environ.get(
+        "TOKENWISE_DATABASE_PATH",
+        os.path.join(backend_dir, "data", "tokenwise.sqlite3"),
+    )
+)
 
 
 # ── Request / Response Models ────────────────────────────────────────────────
@@ -67,6 +86,13 @@ class QueryRequest(BaseModel):
     document_id: str = Field(..., description="Which indexed document to search")
     query: str = Field(..., description="Natural language question")
     top_k: Optional[int] = Field(None, description="Override number of results")
+
+
+class OptimizeContextRequest(BaseModel):
+    document_id: str = Field(..., description="Which indexed document to process")
+    query: str = Field(..., description="Natural language prompt / question")
+    original_doc_tokens: Optional[int] = Field(0, description="Original document token count from M1")
+    max_budget: Optional[int] = Field(None, description="Optional hard cap on context token budget")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -208,6 +234,81 @@ def query_endpoint(req: QueryRequest):
         raise HTTPException(
             status_code=500,
             detail=f"Error processing query: {str(e)}",
+        )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# M3 Token Optimization Endpoints
+# ═════════════════════════════════════════════════════════════════════════════
+
+@app.post("/api/optimize-context")
+def optimize_context_endpoint(req: OptimizeContextRequest):
+    """
+    Member 3 Endpoint: Intent-Aware & Token-Budget-Adaptive Context Optimization.
+
+    Pipeline:
+    1. Calls M2 (RAG Retriever) to get candidate relevant chunks & query analysis.
+    2. Runs M3 TokenOptimizer (budget estimation, deduplication, selection, markdown reconstruction).
+    3. Returns reconstructed Markdown context + Context Efficiency Report.
+    """
+    if not req.query or not req.query.strip():
+        raise HTTPException(status_code=400, detail="Query cannot be empty.")
+
+    if not req.document_id or not req.document_id.strip():
+        raise HTTPException(status_code=400, detail="document_id is required.")
+
+    doc_id = req.document_id.strip()
+    if not rag_retriever.has_document(doc_id):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Document '{doc_id}' not found. Please index it first.",
+        )
+
+    try:
+        # Step 1: Retrieve candidate chunks from M2
+        rag_res = rag_retriever.retrieve(
+            query=req.query.strip(),
+            document_id=doc_id,
+            top_k=20,
+        )
+
+        if "error" in rag_res:
+            raise HTTPException(status_code=404, detail=rag_res["error"])
+
+        retrieved_chunks = rag_res.get("retrieved_chunks", [])
+        query_analysis = rag_res.get("query_analysis", {})
+
+        # Step 2: Determine total document stats
+        doc_store = rag_retriever._stores.get(doc_id)
+        total_chunks = doc_store.size if doc_store else len(retrieved_chunks)
+
+        original_doc_tokens = req.original_doc_tokens or 0
+        if original_doc_tokens == 0 and doc_store and hasattr(doc_store, "_texts"):
+            original_doc_tokens = sum(
+                token_optimizer.count_tokens(t) for t in doc_store._texts
+            )
+        if original_doc_tokens == 0:
+            original_doc_tokens = 2000
+
+        # Step 3: Run Member 3 Optimization Engine
+        optimized_res = token_optimizer.optimize_context(
+            retrieved_chunks=retrieved_chunks,
+            query_analysis=query_analysis,
+            total_analyzed_chunks=total_chunks,
+            original_doc_tokens=original_doc_tokens,
+            max_budget_override=req.max_budget,
+            query=req.query.strip(),
+        )
+
+        return optimized_res
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error optimizing context for document '%s'", doc_id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error optimizing context: {str(e)}",
         )
 
 
