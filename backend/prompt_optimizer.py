@@ -1,24 +1,22 @@
-"""
-TokenWise - Member 1: Prompt Optimizer Module
-Refactors user prompts to eliminate conversational fluff, strip repetitive padding,
-and restructure into clear, token-efficient directives with accurate token statistics.
-"""
+"""Conservative prompt cleanup with token-count and meaning safeguards."""
 
 import re
-from typing import Any, Dict, List, Tuple
-import tiktoken
+from collections import Counter
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
+    import tiktoken
+
     _TOKENIZER = tiktoken.get_encoding("cl100k_base")
 except Exception:
     _TOKENIZER = None
 
 
 def count_tokens(text: str) -> int:
-    """Count tokens using tiktoken (cl100k_base), or approximate fallback."""
+    """Count tokens with cl100k_base, falling back to a labeled estimate."""
     if not text:
         return 0
-    if _TOKENIZER:
+    if _TOKENIZER is not None:
         try:
             return len(_TOKENIZER.encode(text))
         except Exception:
@@ -26,248 +24,306 @@ def count_tokens(text: str) -> int:
     return max(1, int(len(text.split()) * 1.3))
 
 
-# Salutations & Greetings to strip from start
-GREETING_PATTERNS = [
-    (r"^(?:hello|hi|hey|dear)\s+(?:assistant|ai|chatgpt|model|bot|there)[,.]?\s*", "greeting"),
-    (r"^(?:hello|hi|hey|greetings|good\s+(?:morning|afternoon|evening))[,!.]?\s*", "greeting"),
-]
-
-# Fluff / conversational openers to strip
-FLUFF_OPENERS = [
-    (r"^(?:can\s+you\s+(?:please\s+)?(?:kindly\s+)?(?:help\s+me\s+(?:to\s+)?)?)", "polite question opener"),
-    (r"^(?:could\s+you\s+(?:please\s+)?(?:kindly\s+)?(?:help\s+me\s+(?:to\s+)?)?)", "polite question opener"),
-    (r"^(?:would\s+you\s+(?:please\s+)?(?:kindly\s+)?(?:mind\s+)?)", "polite question opener"),
-    (r"^(?:will\s+you\s+(?:please\s+)?(?:kindly\s+)?)", "polite question opener"),
-    (r"^(?:i\s+(?:would\s+like|'d\s+like|want|need)\s+you\s+to\s+)", "indirect request phrasing"),
-    (r"^(?:i\s+(?:was\s+wondering|am\s+wondering)\s+if\s+you\s+(?:could|can)\s+)", "indirect request phrasing"),
-    (r"^(?:what\s+i\s+(?:need|want)\s+is\s+(?:for\s+you\s+to\s+)?)", "indirect request phrasing"),
-    (r"^(?:do\s+your\s+best\s+to\s+)", "fluff preamble"),
-    (r"^(?:try\s+your\s+best\s+to\s+)", "fluff preamble"),
-    (r"^(?:please\s+(?:kindly\s+)?)", "polite filler"),
-    (r"^(?:kindly\s+)", "polite filler"),
-    (r"^(?:help\s+me\s+(?:to\s+)?)", "conversational preamble"),
-]
-
-# Verbose conversational phrases to compress
-WORDY_REPLACEMENTS = [
-    (r"\bin order to\b", "to", "in order to -> to"),
-    (r"\bdue to the fact that\b", "because", "due to the fact that -> because"),
-    (r"\bat this point in time\b", "now", "at this point in time -> now"),
-    (r"\bat the present time\b", "now", "at the present time -> now"),
-    (r"\bfor the purpose of\b", "to", "for the purpose of -> to"),
-    (r"\bwith reference to\b", "regarding", "with reference to -> regarding"),
-    (r"\bin addition to this\b", "also", "in addition to this -> also"),
-    (r"\bas a matter of fact\b", "", "removed filler 'as a matter of fact'"),
-    (r"\bto be honest\b", "", "removed filler 'to be honest'"),
-    (r"\bneedless to say\b", "", "removed filler 'needless to say'"),
-    (r"\bit goes without saying that\b", "", "removed filler 'it goes without saying'"),
-    (r"\bit is important to note that\b", "", "removed filler 'it is important to note that'"),
-    (r"\bas much as possible\b", "", "removed filler 'as much as possible'"),
-    (r"\ba large number of\b", "many", "a large number of -> many"),
-    (r"\ba majority of\b", "most", "a majority of -> most"),
-    (r"\bhas the ability to\b", "can", "has the ability to -> can"),
-    (r"\bis able to\b", "can", "is able to -> can"),
-    (r"\bin the event that\b", "if", "in the event that -> if"),
-    (r"\bprior to\b", "before", "prior to -> before"),
-    (r"\bsubsequent to\b", "after", "subsequent to -> after"),
-    (r"\btake into consideration\b", "consider", "take into consideration -> consider"),
-    (r"\bgive an explanation of\b", "explain", "give an explanation of -> explain"),
-    (r"\bmake a decision\b", "decide", "make a decision -> decide"),
-    (r"\beach and every\b", "every", "each and every -> every"),
-    (r"\bfirst and foremost\b", "first", "first and foremost -> first"),
-    (r"\bfeel free to\b", "", "removed 'feel free to'"),
-]
-
-# Conversational closers to strip
-CLOSER_PATTERNS = [
-    r"[,.]?\s*(?:thank\s+you(?:\s+very\s+much)?|thanks(?:\s+a\s+lot|\s+in\s+advance)?)[!.]?$",
-    r"[,.]?\s*let\s+me\s+know(?:\s+if\s+you\s+need\s+anything(?:\s+else)?)?[!.]?$",
-    r"[,.]?\s*hope\s+this\s+helps[!.]?$",
-]
-
-QUESTION_DIRECTIVES = [
-    (r"^what is\s+(.+?)\??$", r"Explain \1.", "Converted question to direct explanation directive"),
-    (r"^what are\s+(.+?)\??$", r"Describe \1.", "Converted question to direct description directive"),
-    (r"^how does\s+(.+?)\s+work\??$", r"Explain how \1 works.", "Converted question to direct explanation directive"),
-    (r"^how do I\s+(.+?)\??$", r"Explain how to \1.", "Converted question to direct instruction"),
-    (r"^how to\s+(.+?)\??$", r"Explain how to \1.", "Converted question to direct instruction"),
-    (r"^how\s+(.+?)\??$", r"Explain how \1.", "Converted question to direct instruction"),
-    (r"^why\s+(.+?)\??$", r"Explain why \1.", "Converted question to direct explanation directive"),
-    (r"^(?:tell me\s+(?:about|how to|what is)?)\s+(.+?)\??$", r"Explain \1.", "Converted conversational request to direct directive"),
-    (r"^(?:give me\s+(?:a\s+list\s+of)?)\s+(.+?)\??$", r"List \1.", "Converted conversational request to direct list directive"),
-]
-
-CONSTRAINT_KEYWORDS = [
-    "must", "should", "format as", "output as", "output format", "limit to",
-    "within", "only include", "do not", "avoid", "make sure that", "make sure to",
-    "be sure to", "ensure that", "ensure to", "strictly"
-]
-
-
-def optimize_prompt(raw_prompt: str) -> Dict[str, Any]:
-    """
-    Refactor user prompt:
-    1. Removes conversational padding, polite fillers, and repetitive phrases.
-    2. Sharpens directives into concise, imperative instructions without artificial tags.
-    3. Identifies explicit constraints/requirements and structures them cleanly.
-    4. Computes exact token reduction metrics.
-    """
-    text = raw_prompt.strip()
-    original_tokens = count_tokens(text)
-    if not text:
-        return {
-            "optimized": "",
-            "original_tokens": 0,
-            "optimized_tokens": 0,
-            "tokens_saved": 0,
-            "reduction_percent": 0.0,
-            "changes": [],
-        }
-
-    changes_applied: List[str] = []
-    cleaned = text
-
-    # 1. Strip greetings
-    for pattern, label in GREETING_PATTERNS:
-        match = re.search(pattern, cleaned, flags=re.IGNORECASE)
-        if match:
-            cleaned = re.sub(pattern, "", cleaned, count=1, flags=re.IGNORECASE).strip()
-            changes_applied.append(f"Removed conversational {label}: '{match.group(0).strip()}'")
-
-    # 2. Strip fluff openers (can you please, could you please, etc.)
-    stripped_opener = True
-    while stripped_opener:
-        stripped_opener = False
-        for pattern, label in FLUFF_OPENERS:
-            match = re.search(pattern, cleaned, flags=re.IGNORECASE)
-            if match:
-                matched_str = match.group(0).strip()
-                cleaned = re.sub(pattern, "", cleaned, count=1, flags=re.IGNORECASE).strip()
-                changes_applied.append(f"Removed {label}: '{matched_str}'")
-                stripped_opener = True
-
-    # 3. Extract Persona / Role if present
-    role_extracted = None
-    role_pattern = r"^(?:act as|you are)\s+(?:an?|the)\s+([^,.\n]+?)(?:\s+(?:and|,)\s+(?:tell me\s+|explain\s+|write\s+|help\s+|give\s+|show\s+|create\s+|provide\s+)|\s*[,.]\s*|\s*\n)"
-    role_match = re.search(role_pattern, cleaned, flags=re.IGNORECASE)
-    if role_match:
-        role_name = role_match.group(1).strip()
-        role_extracted = role_name[0].upper() + role_name[1:] if role_name else None
-        cleaned = cleaned[role_match.end():].strip()
-        changes_applied.append(f"Extracted system role: '{role_extracted}'")
-    else:
-        standalone_role = r"^(?:act as|you are)\s+(?:an?|the)\s+expert in\s+([^,.\n]+?)(?:\s+and\s+|\s*[,.]\s*)"
-        standalone_match = re.search(standalone_role, cleaned, flags=re.IGNORECASE)
-        if standalone_match:
-            role_extracted = f"Expert in {standalone_match.group(1).strip()}"
-            cleaned = cleaned[standalone_match.end():].strip()
-            changes_applied.append(f"Extracted system role: '{role_extracted}'")
-
-    # 4. Strip conversational closers
-    for pattern in CLOSER_PATTERNS:
-        match = re.search(pattern, cleaned, flags=re.IGNORECASE)
-        if match:
-            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE).strip()
-            changes_applied.append("Removed conversational sign-off")
-
-    # 5. Compress wordy phrases
-    for pattern, replacement, label in WORDY_REPLACEMENTS:
-        match = re.search(pattern, cleaned, flags=re.IGNORECASE)
-        if match:
-            cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
-            changes_applied.append(label)
-
-    # 6. Deduplicate consecutive repeated words (e.g. "very very", "the the")
-    dup_match = re.search(r'\b(\w+)\s+\1\b', cleaned, flags=re.IGNORECASE)
-    if dup_match:
-        cleaned = re.sub(r'\b(\w+)\s+\1\b', r'\1', cleaned, flags=re.IGNORECASE)
-        changes_applied.append("Removed consecutive duplicate words")
-
-    # Clean multi-spaces
-    cleaned = re.sub(r'[ \t]+', ' ', cleaned).strip()
-
-    # 7. Identify constraints vs main instructions across sentences
-    sentences = [s.strip() for s in re.split(r'(?<=[.!?\n])\s+', cleaned) if s.strip()]
-    task_sentences = []
-    extracted_constraints = []
-
-    for s in sentences:
-        s_lower = s.lower()
-        is_constraint = False
-        for kw in CONSTRAINT_KEYWORDS:
-            if kw in s_lower:
-                is_constraint = True
-                break
-
-        if is_constraint and len(sentences) > 1:
-            c_clean = s.rstrip('.!?')
-            c_clean = re.sub(r'^(?:it\s+must|must\s+be|must|make sure that you|make sure to|be sure to|ensure that you|ensure that|ensure to|please)\s+', '', c_clean, flags=re.IGNORECASE)
-            c_clean = c_clean[0].upper() + c_clean[1:] if c_clean else c_clean
-            extracted_constraints.append(c_clean)
-        else:
-            task_sentences.append(s)
-
-    main_instruction = " ".join(task_sentences).strip()
-    if not main_instruction and extracted_constraints:
-        main_instruction = extracted_constraints.pop(0)
-
-    # 8. Convert questions or polite requests into direct imperative commands
-    for pattern, replacement, label in QUESTION_DIRECTIVES:
-        rewritten = re.sub(pattern, replacement, main_instruction, flags=re.IGNORECASE)
-        if rewritten != main_instruction:
-            main_instruction = rewritten
-            changes_applied.append(label)
-            break
-
-    # If instruction was a polite question ending in '?' (e.g. "write a python script to parse csv files?"),
-    # convert trailing '?' to '.'
-    if main_instruction.endswith("?") and not any(main_instruction.lower().startswith(q) for q in ["what", "how", "why", "who", "where", "when"]):
-        main_instruction = main_instruction.rstrip("?").strip() + "."
-        changes_applied.append("Reframed question into direct imperative sentence")
-
-    # Capitalize the first letter of main instruction
-    if main_instruction:
-        main_instruction = main_instruction[0].upper() + main_instruction[1:]
-        if not main_instruction.endswith((".", "!", "?")):
-            main_instruction += "."
-
-    # 9. Format final optimized text (NO arbitrary "Task:" prefix!)
-    output_sections: List[str] = []
-
-    if role_extracted:
-        output_sections.append(f"Role: {role_extracted}")
-
-    if main_instruction:
-        output_sections.append(main_instruction)
-
-    if extracted_constraints:
-        changes_applied.append("Extracted explicit constraints into structured requirements")
-        req_lines = ["Requirements:"]
-        for c in extracted_constraints:
-            req_lines.append(f"- {c.lstrip('-*• ').strip()}")
-        output_sections.append("\n".join(req_lines))
-
-    optimized_text = "\n\n".join(output_sections).strip() or cleaned
-
-    # 10. Check if prompt was already concise
-    optimized_tokens = count_tokens(optimized_text)
+def _result(
+    optimized: str,
+    original_tokens: int,
+    method: str,
+    changes: List[str],
+    semantic_warning: bool = False,
+) -> Dict[str, Any]:
+    optimized_tokens = count_tokens(optimized)
     tokens_saved = max(0, original_tokens - optimized_tokens)
     reduction_percent = (
-        round((tokens_saved / original_tokens) * 100, 1) if original_tokens > 0 else 0.0
+        round(tokens_saved / original_tokens * 100, 1) if original_tokens else 0.0
     )
-
-    if not changes_applied or (optimized_text.lower().rstrip('. ') == text.lower().rstrip('. ') and tokens_saved == 0):
-        changes_applied = ["Prompt is already concise and direct."]
-        optimized_text = text[0].upper() + text[1:] if text else text
-        optimized_tokens = original_tokens
-        tokens_saved = 0
-        reduction_percent = 0.0
-
+    unique_changes = list(dict.fromkeys(changes))
     return {
-        "optimized": optimized_text,
+        "optimized": optimized,
         "original_tokens": original_tokens,
         "optimized_tokens": optimized_tokens,
         "tokens_saved": tokens_saved,
         "reduction_percent": reduction_percent,
-        "changes": changes_applied[:5],
+        "changes": unique_changes[:5] or ["Prompt is already concise and direct."],
+        "method": method,
+        "semantic_warning": semantic_warning,
     }
+
+
+def _original_result(
+    text: str,
+    method: str,
+    changes: Optional[List[str]] = None,
+    semantic_warning: bool = False,
+) -> Dict[str, Any]:
+    original = text.strip()
+    return _result(
+        original,
+        count_tokens(original),
+        method,
+        changes or ["Prompt is already concise and direct."],
+        semantic_warning,
+    )
+
+
+def mask_protected_spans(text: str) -> Tuple[str, List[str]]:
+    """Mask code, quoted text, and URLs while applying lexical transformations."""
+    spans: List[str] = []
+
+    def stash(match: re.Match) -> str:
+        spans.append(match.group(0))
+        return f"\x00{len(spans) - 1}\x00"
+
+    protected = re.compile(
+        r"```.*?```|`[^`\n]*`|\"[^\"\n]*\"|(?<!\w)'[^'\n]*'(?!\w)|https?://\S+",
+        re.DOTALL,
+    )
+    return protected.sub(stash, text), spans
+
+
+def unmask_protected_spans(text: str, spans: List[str]) -> str:
+    return re.sub(r"\x00(\d+)\x00", lambda match: spans[int(match.group(1))], text)
+
+
+GREETING = re.compile(
+    r"^(?:(?:hello|hi|hey|greetings|good\s+(?:morning|afternoon|evening))\b[,!.\s]*"
+    r"(?:(?:ai|assistant|chatgpt|model|bot|there)\b[,!.\s]*)?"
+    r"|dear\s+(?:assistant|ai|chatgpt|model|bot)\b[,!.\s]*)",
+    re.IGNORECASE,
+)
+
+FLUFF_OPENERS = [
+    (r"^(?:can\s+you\s+(?:please\s+)?(?:kindly\s+)?(?:help\s+me\s+(?:to\s+)?)?)", "Removed polite request opener"),
+    (r"^(?:could\s+you\s+(?:please\s+)?(?:kindly\s+)?(?:help\s+me\s+(?:to\s+)?)?)", "Removed polite request opener"),
+    (r"^(?:would\s+you\s+(?:please\s+)?(?:kindly\s+)?(?:mind\s+)?)", "Removed polite request opener"),
+    (r"^(?:will\s+you\s+(?:please\s+)?(?:kindly\s+)?)", "Removed polite request opener"),
+    (r"^(?:i(?:\s+would|['’]d)\s+like\s+you\s+to\s+)", "Removed indirect request phrasing"),
+    (r"^(?:i\s+(?:was\s+wondering|am\s+wondering)\s+if\s+you\s+(?:could|can)\s+)", "Removed indirect request phrasing"),
+    (r"^(?:what\s+i\s+(?:need|want)\s+is\s+(?:for\s+you\s+to\s+)?)", "Removed indirect request phrasing"),
+    (r"^(?:please\s+(?:kindly\s+)?)", "Removed polite filler"),
+    (r"^(?:kindly\s+)", "Removed polite filler"),
+    (r"^(?:help\s+me\s+(?:to\s+)?)", "Removed conversational preamble"),
+]
+
+WORDY_REPLACEMENTS = [
+    (r"\bin order to\b", "to", "Replaced 'in order to' with 'to'"),
+    (r"\bdue to the fact that\b", "because", "Replaced 'due to the fact that' with 'because'"),
+    (r"\bat this point in time\b|\bat the present time\b", "now", "Replaced wordy time phrase with 'now'"),
+    (r"\bfor the purpose of\b", "to", "Replaced 'for the purpose of' with 'to'"),
+    (r"\bwith reference to\b", "regarding", "Replaced 'with reference to' with 'regarding'"),
+    (r"\bin addition to this\b", "also", "Replaced 'in addition to this' with 'also'"),
+    (r"\bas a matter of fact\b|\bto be honest\b|\bneedless to say\b", "", "Removed conversational filler"),
+    (r"\bit is important to note that\b", "", "Removed conversational filler"),
+    (r"\ba large number of\b", "many", "Replaced 'a large number of' with 'many'"),
+    (r"\ba majority of\b", "most", "Replaced 'a majority of' with 'most'"),
+    (r"\bhas the ability to\b|\bis able to\b", "can", "Replaced wordy ability phrase with 'can'"),
+    (r"\bin the event that\b", "if", "Replaced 'in the event that' with 'if'"),
+    (r"\bprior to\b", "before", "Replaced 'prior to' with 'before'"),
+    (r"\bsubsequent to\b", "after", "Replaced 'subsequent to' with 'after'"),
+    (r"\btake into consideration\b", "consider", "Replaced 'take into consideration' with 'consider'"),
+    (r"\bgive an explanation of\b", "explain", "Replaced wordy explanation phrase"),
+    (r"\bmake a decision\b", "decide", "Replaced 'make a decision' with 'decide'"),
+    (r"\beach and every\b", "every", "Replaced 'each and every' with 'every'"),
+    (r"\bfirst and foremost\b", "first", "Replaced 'first and foremost' with 'first'"),
+]
+
+CLOSER_PATTERNS = [
+    re.compile(r"(?:(?<=[.!?,])\s+|^)(?:thanks?(?:\s+a\s+lot|\s+in\s+advance)?|thank\s+you(?:\s+very\s+much)?)[!.]?$", re.IGNORECASE),
+    re.compile(r"(?:(?<=[.!?,])\s+|^)let\s+me\s+know(?:\s+if\s+you\s+need\s+anything(?:\s+else)?)?[!.]?$", re.IGNORECASE),
+    re.compile(r"(?:(?<=[.!?,])\s+|^)hope\s+this\s+helps[!.]?$", re.IGNORECASE),
+]
+
+QUESTION_DIRECTIVES = [
+    (r"^what is\s+(.+?)\??$", r"Explain \1."),
+    (r"^what are\s+(.+?)\??$", r"Describe \1."),
+    (r"^how does\s+(.+?)\s+work\??$", r"Explain how \1 works."),
+    (r"^how do I\s+(.+?)\??$", r"Explain how to \1."),
+    (r"^how to\s+(.+?)\??$", r"Explain how to \1."),
+    (r"^why\s+(.+?)\??$", r"Explain why \1."),
+]
+
+
+def _is_constraint(sentence: str) -> bool:
+    if sentence.rstrip().endswith("?"):
+        return False
+    return bool(
+        re.match(
+            r"^(?:do\s+not|don['’]t|never|avoid|limit|keep|must|use|include|only|"
+            r"make\s+sure|ensure|be\s+sure|format|output)\b",
+            sentence.strip(),
+            re.IGNORECASE,
+        )
+    )
+
+
+def _clean_constraint(sentence: str) -> str:
+    cleaned = re.sub(
+        r"^(?:make\s+sure\s+(?:that\s+)?|be\s+sure\s+(?:that\s+)?|"
+        r"ensure\s+(?:that\s+)?|please\s+)(?:you\s+)?",
+        "",
+        sentence.strip(),
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"^[,;:]+\s*", "", cleaned)
+    if cleaned and cleaned[0].islower():
+        cleaned = cleaned[0].upper() + cleaned[1:]
+    return cleaned.rstrip(".?! ")
+
+
+def _has_list_or_paragraphs(text: str) -> bool:
+    if "\n" in text:
+        return True
+    return bool(re.search(r"(?:^|\s)(?:[-*•]|\d+[.)])\s+", text))
+
+
+def _capitalise_sentence_starts(text: str) -> str:
+    def protect(match: re.Match) -> str:
+        return match.group(0).replace(".", "\ue001")
+
+    text = re.sub(r"\b(?:e\.g|i\.e|mr|mrs|ms|dr|prof|etc)\.", protect, text, flags=re.IGNORECASE)
+    text = re.sub(r"^([a-z])", lambda match: match.group(1).upper(), text)
+    text = re.sub(
+        r"(?<=[.!?]\s)([a-z])",
+        lambda match: match.group(1).upper(),
+        text,
+    )
+    return text.replace("\ue001", ".")
+
+
+def _critical_signature(text: str) -> Counter:
+    numbers = re.findall(r"\b\d+(?:\.\d+)?\b", text)
+    negations = re.findall(r"\b(?:not|never|no|without|only|don['’]t)\b", text, re.IGNORECASE)
+    quoted = re.findall(r'"[^"\n]*"|(?<!\w)\'[^\'\n]*\'(?!\w)', text)
+    return Counter([number.lower() for number in numbers + negations + quoted])
+
+
+def _split_sentences(text: str) -> List[str]:
+    protected = re.sub(
+        r"\b(e\.g|i\.e|mr|mrs|ms|dr|prof|etc)\.",
+        lambda match: match.group(0).replace(".", "\ue000"),
+        text,
+        flags=re.IGNORECASE,
+    )
+    sentences = re.split(r"(?<=[.!?])\s+", protected)
+    return [sentence.replace("\ue000", ".").strip() for sentence in sentences if sentence.strip()]
+
+
+def _clean_phrases(text: str, changes: List[str]) -> str:
+    cleaned = GREETING.sub("", text, count=1)
+    if cleaned != text:
+        changes.append("Removed conversational greeting")
+
+    for pattern, label in FLUFF_OPENERS:
+        new_text = re.sub(pattern, "", cleaned, count=1, flags=re.IGNORECASE)
+        if new_text != cleaned:
+            cleaned = new_text
+            changes.append(label)
+            break
+
+    for closer in CLOSER_PATTERNS:
+        new_text = closer.sub("", cleaned)
+        if new_text != cleaned:
+            cleaned = new_text
+            changes.append("Removed sentence-final conversational sign-off")
+
+    for pattern, replacement, label in WORDY_REPLACEMENTS:
+        new_text = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
+        if new_text != cleaned:
+            cleaned = new_text
+            changes.append(label)
+
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = re.sub(r",[ \t]*,", ",", cleaned)
+    cleaned = re.sub(r"[ \t]+([,.;:!?])", r"\1", cleaned)
+    cleaned = re.sub(r"^[ \t,;:]+|[ \t,;:]+$", "", cleaned)
+    return cleaned
+
+
+def optimize_prompt(raw_prompt: str, include_structure: bool = False) -> Dict[str, Any]:
+    """Remove safe conversational padding; structure is optional and never costs tokens."""
+    text = raw_prompt.strip()
+    method = "tiktoken" if _TOKENIZER is not None else "approx"
+    original_tokens = count_tokens(text)
+    if not text:
+        return _result("", 0, method, [], False)
+
+    changes: List[str] = []
+    masked, spans = mask_protected_spans(text)
+    flat_cleaned = _clean_phrases(masked, changes)
+    multiline_or_list = _has_list_or_paragraphs(text)
+
+    # Lists and paragraphs receive only local phrase cleanup: preserve their layout and wording.
+    if not multiline_or_list:
+        sentences = _split_sentences(flat_cleaned)
+        flat_cleaned = " ".join(sentences)
+        flat_cleaned = _capitalise_sentence_starts(flat_cleaned)
+
+        if len(sentences) == 1:
+            for pattern, replacement in QUESTION_DIRECTIVES:
+                rewritten = re.sub(pattern, replacement, flat_cleaned, flags=re.IGNORECASE)
+                if rewritten != flat_cleaned:
+                    flat_cleaned = rewritten
+                    changes.append("Rewrote question as a direct instruction")
+                    break
+            if flat_cleaned.endswith("?") and re.match(
+                r"^(?:summarize|describe|list|compare|analyze|write|generate|provide|show|draft|create|explain|answer|return)\b",
+                flat_cleaned,
+                re.IGNORECASE,
+            ):
+                flat_cleaned = flat_cleaned[:-1] + "."
+
+    flat_cleaned = unmask_protected_spans(flat_cleaned, spans).strip()
+    if not flat_cleaned:
+        return _original_result(text, method)
+
+    candidates = [flat_cleaned]
+    if include_structure and not multiline_or_list:
+        structured_changes: List[str] = []
+        role = None
+        body = masked
+        role_pattern = re.compile(
+            r"^(?:act as|you are)\s+(?:an?|the)\s+(?:expert in\s+)?([^,.]+?)"
+            r"(?:\s+and\s+(?:tell me|explain|write|help|give|show|create|provide)\b|[,.;]|$)",
+            re.IGNORECASE,
+        )
+        role_match = role_pattern.search(body)
+        if role_match:
+            role = role_match.group(1).strip()
+            body = body[role_match.end():].strip()
+
+        task: List[str] = []
+        requirements: List[str] = []
+        for sentence in _split_sentences(body):
+            if _is_constraint(sentence):
+                requirements.append(_clean_constraint(sentence))
+            else:
+                task.append(sentence)
+
+        sections: List[str] = []
+        if role:
+            sections.append(f"Role: {role[0].upper() + role[1:]}")
+        if task:
+            sections.append(" ".join(task))
+        if requirements:
+            sections.append("Requirements:\n" + "\n".join(f"- {item}" for item in requirements))
+        structured = unmask_protected_spans("\n\n".join(sections).strip(), spans)
+        if structured:
+            candidates.append(structured)
+            if structured != flat_cleaned:
+                structured_changes.append("Structured role and explicit requirements")
+                changes.extend(structured_changes)
+
+    best = min(candidates, key=count_tokens)
+    best_tokens = count_tokens(best)
+    if best_tokens >= original_tokens:
+        return _original_result(text, method)
+
+    warning = _critical_signature(text) != _critical_signature(best)
+    if warning:
+        return _original_result(
+            text,
+            method,
+            changes + ["Kept original because a meaning-sensitive detail changed."],
+            semantic_warning=True,
+        )
+
+    return _result(best, original_tokens, method, changes, semantic_warning=False)

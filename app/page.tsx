@@ -6,34 +6,21 @@ import {
   AlertCircle,
   ArrowRight,
   ArrowUp,
-  BarChart3,
   Check,
-  CheckCircle2,
-  ChevronDown,
   Clipboard,
-  Copy,
   Download,
-  ExternalLink,
   FileText,
-  HelpCircle,
   Key,
   Loader2,
   LogOut,
-  Mail,
-  Menu,
-  MessageSquare,
-  Paperclip,
-  Plus,
   RotateCcw,
   Search,
   Shield,
   Sparkles,
   UploadCloud,
   User,
-  UserCheck,
   WandSparkles,
   X,
-  Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -92,6 +79,8 @@ type PromptResult = {
   tokens_saved: number;
   reduction_percent: number;
   changes: string[];
+  method?: "tiktoken" | "approx";
+  semantic_warning?: boolean;
 };
 
 type RetrievedChunk = {
@@ -124,17 +113,15 @@ export default function Home() {
   );
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [promptCopied, setPromptCopied] = useState(false);
   // Account Menu & Modal state
   const [activeDialog, setActiveDialog] = useState<
-    "profile" | "api_keys" | "analytics" | "security" | "how" | null
+    "profile" | "api_keys" | "security" | "how" | null
   >(null);
-  const [apiKeyCopied, setApiKeyCopied] = useState(false);
   const [userProfile, setUserProfile] = useState({
-    name: "Member 1",
-    email: "m1.admin@tokenwise.ai",
-    role: "Lead AI Engineer",
-    organization: "TokenWise Core Team",
+    name: "Demo User",
+    email: "demo@tokenwise.local",
+    role: "Demo account",
+    organization: "Local demo workspace",
   });
 
   // Real data state
@@ -158,12 +145,38 @@ export default function Home() {
   const [queryText, setQueryText] = useState("");
   const [queryResult, setQueryResult] = useState<QueryResult | null>(null);
   const [queryLoading, setQueryLoading] = useState(false);
+  const [queryError, setQueryError] = useState<string | null>(null);
   const [queryHistory, setQueryHistory] = useState<
     Array<{ query: string; result: QueryResult }>
   >([]);
 
+  const resetDocumentState = () => {
+    setDocumentId(null);
+    setIndexStatus("idle");
+    setQueryText("");
+    setQueryResult(null);
+    setQueryHistory([]);
+    setQueryError(null);
+  };
+
   const chooseFile = (selected?: File) => {
     if (!selected) return;
+    const maxSizeBytes = 30 * 1024 * 1024;
+    const isPdf =
+      selected.type === "application/pdf" ||
+      (!selected.type && selected.name.toLowerCase().endsWith(".pdf"));
+    if (!isPdf) {
+      toast.error("Choose a PDF file to continue.");
+      if (inputRef.current) inputRef.current.value = "";
+      return;
+    }
+    if (selected.size > maxSizeBytes) {
+      toast.error("PDF files must be 30 MB or smaller.");
+      if (inputRef.current) inputRef.current.value = "";
+      return;
+    }
+    resetDocumentState();
+    if (inputRef.current) inputRef.current.value = "";
     setFile({
       rawFile: selected,
       name: selected.name,
@@ -209,10 +222,10 @@ export default function Home() {
       if (data.chunks && data.chunks.length > 0) {
         autoIndexChunks(data.chunks, file!.name);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("PDF Analysis failed:", err);
       setErrorMessage(
-        err.message ||
+        (err instanceof Error ? err.message : null) ||
           "Failed to connect to backend server. Make sure the FastAPI service is running.",
       );
       setStatus("error");
@@ -224,14 +237,19 @@ export default function Home() {
     chunks: NonNullable<AnalysisResult["chunks"]>,
     filename: string,
   ) => {
-    const docId = filename
+    const baseId = filename
       .replace(/\.pdf$/i, "")
       .replace(/[^a-zA-Z0-9_-]/g, "_")
       .slice(0, 40);
+    const uniqueId =
+      globalThis.crypto?.randomUUID?.() ??
+      `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const docId = `${baseId || "document"}-${uniqueId}`;
     setIndexStatus("indexing");
     setDocumentId(null);
     setQueryResult(null);
     setQueryHistory([]);
+    setQueryError(null);
 
     try {
       const response = await fetch(`${API_BASE}/api/index-document`, {
@@ -250,6 +268,8 @@ export default function Home() {
     } catch (err) {
       console.error("Indexing failed:", err);
       setIndexStatus("error");
+      setQueryError("Could not index this PDF. Try analyzing it again.");
+      toast.error("Could not index this PDF. Try analyzing it again.");
     }
   };
 
@@ -257,6 +277,7 @@ export default function Home() {
   const handleQuery = async () => {
     if (!queryText.trim() || !documentId || queryLoading) return;
     setQueryLoading(true);
+    setQueryError(null);
 
     try {
       const response = await fetch(`${API_BASE}/api/query`, {
@@ -282,6 +303,10 @@ export default function Home() {
       setQueryText("");
     } catch (err) {
       console.error("Query failed:", err);
+      const message =
+        err instanceof Error ? err.message : "Could not query this document.";
+      setQueryError(message);
+      toast.error(message);
     } finally {
       setQueryLoading(false);
     }
@@ -311,12 +336,14 @@ export default function Home() {
   };
 
   const handleOptimizePrompt = async (overridePrompt?: unknown) => {
-    const rawText = (typeof overridePrompt === "string" ? overridePrompt : prompt).trim();
+    const rawText = (
+      typeof overridePrompt === "string" ? overridePrompt : prompt
+    ).trim();
     if (!rawText || promptLoading) return;
     setPromptLoading(true);
-    setPrompt("");
 
-    const messageId = Date.now().toString() + Math.random().toString(36).slice(2, 6);
+    const messageId =
+      Date.now().toString() + Math.random().toString(36).slice(2, 6);
 
     try {
       const response = await fetch(`${API_BASE}/api/optimize-prompt`, {
@@ -330,50 +357,19 @@ export default function Home() {
       }
 
       const data: PromptResult = await response.json();
+      setPrompt("");
       setPromptResult(data);
-      setPromptHistory((prev) => [...prev, { id: messageId, original: rawText, result: data }]);
-    } catch (err: any) {
+      setPromptHistory((prev) => [
+        ...prev,
+        { id: messageId, original: rawText, result: data },
+      ]);
+    } catch (err: unknown) {
       console.error("Prompt optimization failed:", err);
-      // Fallback local rule-based optimization without arbitrary "Task:" prefix
-      const originalPrompt = rawText;
-      let cleaned = originalPrompt
-        .replace(/^(?:hello|hi|hey|dear)\s+(?:assistant|ai|chatgpt|model|bot|there)[,.]?\s*/i, "")
-        .replace(/^(?:can you please|could you please|would you please|please|kindly)\s+/i, "")
-        .replace(/in order to/gi, "to")
-        .replace(/due to the fact that/gi, "because");
-
-      let optimized = cleaned
-        .trim()
-        .replace(/^what is\s+(.+?)\??$/i, "Explain $1.")
-        .replace(/^what are\s+(.+?)\??$/i, "Describe $1.")
-        .replace(/^how does\s+(.+?)\s+work\??$/i, "Explain how $1 works.")
-        .replace(/^how do I\s+(.+?)\??$/i, "Explain how to $1.")
-        .replace(/^why\s+(.+?)\??$/i, "Explain why $1.");
-
-      if (optimized.endsWith("?") && !/^(?:what|how|why|who|where|when)/i.test(optimized)) {
-        optimized = optimized.replace(/\?+$/, ".");
-      }
-      if (optimized) {
-        optimized = optimized.charAt(0).toUpperCase() + optimized.slice(1);
-      }
-
-      const countWords = (value: string) =>
-        value.trim() ? value.trim().split(/\s+/).length : 0;
-      const originalTokens = countWords(originalPrompt);
-      const optimizedTokens = countWords(optimized);
-      const tokensSaved = Math.max(0, originalTokens - optimizedTokens);
-      const fallbackResult: PromptResult = {
-        optimized: optimized || originalPrompt,
-        original_tokens: originalTokens,
-        optimized_tokens: optimizedTokens,
-        tokens_saved: tokensSaved,
-        reduction_percent: originalTokens
-          ? Math.round((tokensSaved / originalTokens) * 1000) / 10
-          : 0,
-        changes: ["Cleaned conversational fluff and streamlined directive."],
-      };
-      setPromptResult(fallbackResult);
-      setPromptHistory((prev) => [...prev, { id: messageId, original: rawText, result: fallbackResult }]);
+      toast.error(
+        err instanceof Error
+          ? err.message
+          : "Prompt optimization failed. Your prompt is still available to retry.",
+      );
     } finally {
       setPromptLoading(false);
     }
@@ -384,15 +380,13 @@ export default function Home() {
     if (!textToCopy) return;
     await navigator.clipboard?.writeText(textToCopy);
     setCopiedId(id || "latest");
-    setPromptCopied(true);
     window.setTimeout(() => {
       setCopiedId(null);
-      setPromptCopied(false);
     }, 1600);
   };
 
   return (
-    <main className="h-screen overflow-hidden bg-[#f4f5f0] text-[#101827]">
+    <main className="h-dvh overflow-hidden bg-[#f4f5f0] text-[#101827]">
       <header className="border-b border-[#101827]/10 bg-[#f4f5f0]/90 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-[1440px] items-center justify-between px-5 sm:px-8">
           <a
@@ -460,19 +454,13 @@ export default function Home() {
                           {userProfile.name}
                         </span>
                         <span className="rounded-full bg-[#6a7516]/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[#6a7516]">
-                          Pro
+                          Demo
                         </span>
                       </div>
                       <span className="truncate text-xs text-[#566071]">
                         {userProfile.email}
                       </span>
                     </div>
-                  </div>
-                  <div className="mt-3 flex items-center justify-between rounded-xl bg-[#f4f5f0] px-3 py-2 text-xs">
-                    <span className="font-medium text-[#566071]">
-                      Tokens Saved Today
-                    </span>
-                    <span className="font-bold text-[#101827]">142.5K ⚡</span>
                   </div>
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator className="my-1 bg-[#101827]/8" />
@@ -492,13 +480,6 @@ export default function Home() {
                     <span>API Keys & Integration</span>
                   </DropdownMenuItem>
                   <DropdownMenuItem
-                    onClick={() => setActiveDialog("analytics")}
-                    className="flex cursor-pointer items-center gap-2.5 rounded-xl px-3 py-2.5 text-sm font-medium text-[#101827] transition-colors hover:bg-[#101827]/5"
-                  >
-                    <BarChart3 size={16} className="text-[#566071]" />
-                    <span>Usage Analytics</span>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
                     onClick={() => setActiveDialog("security")}
                     className="flex cursor-pointer items-center gap-2.5 rounded-xl px-3 py-2.5 text-sm font-medium text-[#101827] transition-colors hover:bg-[#101827]/5"
                   >
@@ -510,7 +491,7 @@ export default function Home() {
                 <DropdownMenuItem
                   onClick={() => {
                     toast.success(
-                      "Account menu synced. Active session: Member 1",
+                      "Account menu synced. Active session: Demo User",
                     );
                   }}
                   className="flex cursor-pointer items-center gap-2.5 rounded-xl px-3 py-2.5 text-sm font-medium text-red-600 transition-colors hover:bg-red-50"
@@ -526,7 +507,7 @@ export default function Home() {
 
       <section
         id="workspace"
-        className="mx-auto flex h-[calc(100vh-64px)] max-w-[1440px] flex-col overflow-hidden px-5 py-4 sm:px-8"
+        className="mx-auto flex h-[calc(100dvh-64px)] max-w-[1440px] flex-col overflow-hidden px-5 py-4 sm:px-8"
       >
         <div className="mb-3 flex min-h-14 items-center justify-between gap-4">
           <div>
@@ -653,6 +634,8 @@ export default function Home() {
                       setStatus("idle");
                       setAnalysisResult(null);
                       setErrorMessage(null);
+                      resetDocumentState();
+                      if (inputRef.current) inputRef.current.value = "";
                     }}
                     className="grid size-8 place-items-center rounded-full text-white/45 hover:bg-white/10 hover:text-white"
                     aria-label="Remove file"
@@ -910,7 +893,6 @@ export default function Home() {
                   setPrompt("");
                   setPromptResult(null);
                   setPromptHistory([]);
-                  setPromptCopied(false);
                   setCopiedId(null);
                 }}
                 className="rounded-lg border border-[#101827]/10 px-3 py-2 text-xs font-semibold text-[#596270] hover:bg-[#f4f5f0] transition"
@@ -929,8 +911,9 @@ export default function Home() {
                     How can I improve your prompt?
                   </h3>
                   <p className="mt-2 max-w-md text-sm leading-6 text-[#747d89]">
-                    Paste a prompt below. TokenWise strips conversational filler,
-                    refines directives, extracts constraints, and cuts token cost.
+                    Paste a prompt below. TokenWise strips conversational
+                    filler, refines directives, extracts constraints, and cuts
+                    token cost.
                   </p>
                   <div className="mt-6 flex flex-wrap justify-center gap-2 max-w-xl">
                     {[
@@ -947,7 +930,10 @@ export default function Home() {
                         }}
                         className="rounded-full border border-[#101827]/10 bg-white px-3 py-1.5 text-xs text-[#525b68] hover:border-[#6f7f16] hover:bg-[#f8f9f5] transition text-left"
                       >
-                        ⚡ {example.length > 48 ? example.slice(0, 48) + "..." : example}
+                        ⚡{" "}
+                        {example.length > 48
+                          ? example.slice(0, 48) + "..."
+                          : example}
                       </button>
                     ))}
                   </div>
@@ -974,15 +960,28 @@ export default function Home() {
                             <p className="text-sm font-semibold">
                               Tokenwise Optimized
                             </p>
-                            <span className="rounded-full bg-[#edf4c9] px-2.5 py-1 text-[11px] font-semibold text-[#647111]">
-                              {item.result.tokens_saved > 0
-                                ? `~${item.result.reduction_percent}% fewer tokens`
-                                : item.result.optimized_tokens > item.result.original_tokens
-                                  ? `${item.result.optimized_tokens - item.result.original_tokens} more tokens`
-                                  : "Optimized directive"} (
-                              {item.result.original_tokens} →{" "}
-                              {item.result.optimized_tokens})
-                            </span>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              {item.result.method === "approx" && (
+                                <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-semibold text-amber-800">
+                                  ≈ estimate
+                                </span>
+                              )}
+                              {item.result.semantic_warning && (
+                                <span className="rounded-full bg-red-100 px-2.5 py-1 text-[11px] font-semibold text-red-800">
+                                  Review meaning
+                                </span>
+                              )}
+                              <span className="rounded-full bg-[#edf4c9] px-2.5 py-1 text-[11px] font-semibold text-[#647111]">
+                                {item.result.tokens_saved > 0
+                                  ? `~${item.result.reduction_percent}% fewer tokens`
+                                  : item.result.optimized_tokens >
+                                      item.result.original_tokens
+                                    ? `${item.result.optimized_tokens - item.result.original_tokens} more tokens`
+                                    : "Optimized directive"}{" "}
+                                ({item.result.original_tokens} →{" "}
+                                {item.result.optimized_tokens})
+                              </span>
+                            </div>
                           </div>
                           <div className="rounded-xl border border-[#101827]/10 bg-[#f8f9f5] p-4">
                             <pre className="whitespace-pre-wrap font-sans text-sm leading-7 text-[#3d4654]">
@@ -991,17 +990,23 @@ export default function Home() {
                           </div>
                           <div className="mt-3 flex flex-wrap items-center gap-3">
                             <button
-                              onClick={() => copyOptimizedPrompt(item.id, item.result.optimized)}
+                              onClick={() =>
+                                copyOptimizedPrompt(
+                                  item.id,
+                                  item.result.optimized,
+                                )
+                              }
                               className="flex items-center gap-1.5 text-xs font-semibold text-[#626c78] hover:text-[#101827]"
                             >
                               <Clipboard size={14} />{" "}
                               {copiedId === item.id ? "Copied!" : "Copy prompt"}
                             </button>
-                            {item.result.changes && item.result.changes.length > 0 && (
-                              <span className="text-[11px] text-[#788290]">
-                                • {item.result.changes.join(" • ")}
-                              </span>
-                            )}
+                            {item.result.changes &&
+                              item.result.changes.length > 0 && (
+                                <span className="text-[11px] text-[#788290]">
+                                  • {item.result.changes.join(" • ")}
+                                </span>
+                              )}
                           </div>
                         </div>
                       </div>
@@ -1015,7 +1020,11 @@ export default function Home() {
                   value={prompt}
                   onChange={(event) => setPrompt(event.target.value)}
                   onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.shiftKey) {
+                    if (
+                      event.key === "Enter" &&
+                      !event.shiftKey &&
+                      !event.nativeEvent.isComposing
+                    ) {
                       event.preventDefault();
                       handleOptimizePrompt();
                     }
@@ -1026,8 +1035,11 @@ export default function Home() {
                 <div className="mt-2 flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-[#9198a1] px-2">
-                      {prompt.length} chars · ~
-                      {prompt ? prompt.split(/\s+/).length : 0} words
+                      {prompt.length} chars · ≈
+                      {prompt.trim()
+                        ? Math.max(1, Math.ceil(prompt.trim().length / 4))
+                        : 0}{" "}
+                      tokens
                     </span>
                   </div>
                   <button
@@ -1094,6 +1106,14 @@ export default function Home() {
 
             {/* Content */}
             <div className="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col px-5 py-5 sm:px-8">
+              {queryError && indexStatus !== "error" && (
+                <p
+                  role="alert"
+                  className="mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+                >
+                  {queryError}
+                </p>
+              )}
               {/* Empty state or conversation */}
               {queryHistory.length === 0 && !queryResult ? (
                 <div className="flex flex-1 flex-col items-center justify-center pb-10 text-center">
@@ -1108,9 +1128,12 @@ export default function Home() {
                       ? "Your document is indexed and ready. Type a question below to retrieve the most relevant passages."
                       : indexStatus === "indexing"
                         ? "Indexing your document chunks... This will only take a moment."
-                        : "Upload and analyze a PDF first. After analysis, the document chunks will be automatically indexed for semantic search."}
+                        : indexStatus === "error"
+                          ? queryError ||
+                            "Document indexing failed. Please try analyzing the PDF again."
+                          : "Upload and analyze a PDF first. After analysis, the document chunks will be automatically indexed for semantic search."}
                   </p>
-                  {indexStatus === "idle" && (
+                  {(indexStatus === "idle" || indexStatus === "error") && (
                     <Button
                       onClick={() => setActiveTool("pdf")}
                       className="mt-5 rounded-lg bg-[#101827] text-white hover:bg-[#263247]"
@@ -1234,7 +1257,11 @@ export default function Home() {
                   value={queryText}
                   onChange={(event) => setQueryText(event.target.value)}
                   onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.shiftKey) {
+                    if (
+                      event.key === "Enter" &&
+                      !event.shiftKey &&
+                      !event.nativeEvent.isComposing
+                    ) {
                       event.preventDefault();
                       handleQuery();
                     }
@@ -1455,52 +1482,24 @@ export default function Home() {
           </DialogHeader>
 
           <div className="space-y-4 py-3">
-            <div className="rounded-xl bg-[#101827] p-4 text-white">
-              <div className="flex items-center justify-between text-xs text-[#d8ff4f] mb-1">
-                <span className="font-mono uppercase font-bold">
-                  Live API Secret Key
-                </span>
-                <span className="bg-[#d8ff4f]/20 px-2 py-0.5 rounded-full font-bold">
-                  Active
-                </span>
-              </div>
-              <div className="flex items-center justify-between font-mono text-sm bg-white/10 rounded-lg p-2.5 mt-2">
-                <span className="truncate pr-2">
-                  tw_live_994827d091f82e1837a4b
-                </span>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => {
-                    navigator.clipboard.writeText(
-                      "tw_live_994827d091f82e1837a4b",
-                    );
-                    setApiKeyCopied(true);
-                    toast.success("API Key copied to clipboard!");
-                    setTimeout(() => setApiKeyCopied(false), 2000);
-                  }}
-                  className="h-7 text-xs text-white hover:bg-white/20 hover:text-white"
-                >
-                  {apiKeyCopied ? (
-                    <CheckCircle2 size={14} className="text-emerald-400" />
-                  ) : (
-                    <Copy size={14} />
-                  )}
-                </Button>
-              </div>
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+              <p className="font-semibold">Demo workspace</p>
+              <p className="mt-1 text-xs leading-5">
+                No API key is configured or generated in this demo.
+              </p>
             </div>
 
             <div className="space-y-2 text-xs text-[#566071]">
               <div className="flex justify-between border-b border-[#101827]/8 py-1.5">
                 <span>Backend Endpoint</span>
                 <span className="font-mono text-[#101827] font-semibold">
-                  http://127.0.0.1:8000/api/analyze-pdf
+                  {API_BASE ? `${API_BASE}/api` : "Same-origin /api"}
                 </span>
               </div>
               <div className="flex justify-between border-b border-[#101827]/8 py-1.5">
                 <span>Rate Limit</span>
                 <span className="font-semibold text-[#101827]">
-                  100,000 tokens / min
+                  Not configured
                 </span>
               </div>
             </div>
@@ -1512,66 +1511,6 @@ export default function Home() {
               className="rounded-xl bg-[#101827] text-white"
             >
               Close
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* Usage Analytics Dialog */}
-      <Dialog
-        open={activeDialog === "analytics"}
-        onOpenChange={(open) => !open && setActiveDialog(null)}
-      >
-        <DialogContent className="sm:max-w-md rounded-2xl p-6 bg-white border border-[#101827]/12 shadow-2xl">
-          <DialogHeader>
-            <DialogTitle className="text-xl font-bold text-[#101827] flex items-center gap-2">
-              <BarChart3 size={20} className="text-[#6a7516]" /> Usage Analytics
-              & Impact
-            </DialogTitle>
-            <DialogDescription className="text-sm text-[#566071]">
-              Real-time statistics on token savings and optimization efficiency.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="grid grid-cols-2 gap-3 py-3">
-            <div className="rounded-xl bg-[#f4f5f0] p-3.5 text-center border border-[#101827]/8">
-              <span className="text-xs text-[#566071] font-semibold block mb-1">
-                Total Reduced Tokens
-              </span>
-              <span className="text-2xl font-black text-[#101827]">
-                1,482,900
-              </span>
-            </div>
-            <div className="rounded-xl bg-[#f4f5f0] p-3.5 text-center border border-[#101827]/8">
-              <span className="text-xs text-[#566071] font-semibold block mb-1">
-                Avg. Reduction %
-              </span>
-              <span className="text-2xl font-black text-[#6a7516]">78.4%</span>
-            </div>
-            <div className="rounded-xl bg-[#f4f5f0] p-3.5 text-center border border-[#101827]/8">
-              <span className="text-xs text-[#566071] font-semibold block mb-1">
-                PDF Documents
-              </span>
-              <span className="text-2xl font-black text-[#101827]">
-                34 Analyzed
-              </span>
-            </div>
-            <div className="rounded-xl bg-[#f4f5f0] p-3.5 text-center border border-[#101827]/8">
-              <span className="text-xs text-[#566071] font-semibold block mb-1">
-                Estimated Cost Saved
-              </span>
-              <span className="text-2xl font-black text-emerald-600">
-                $340.20
-              </span>
-            </div>
-          </div>
-
-          <div className="flex justify-end mt-2">
-            <Button
-              onClick={() => setActiveDialog(null)}
-              className="rounded-xl bg-[#101827] text-white"
-            >
-              Done
             </Button>
           </div>
         </DialogContent>
@@ -1601,19 +1540,19 @@ export default function Home() {
                   2-Factor Authentication
                 </span>
               </div>
-              <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-bold">
-                Enabled
+              <span className="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full font-bold">
+                Demo · not configured
               </span>
             </div>
             <div className="flex items-center justify-between p-3 rounded-xl bg-[#f4f5f0] border border-[#101827]/8">
               <div className="flex items-center gap-2">
                 <Activity size={16} className="text-[#566071]" />
                 <span className="font-semibold text-[#101827]">
-                  Active Local Session
+                  Session Address
                 </span>
               </div>
               <span className="text-xs text-[#566071] font-mono">
-                127.0.0.1
+                Not available in demo
               </span>
             </div>
           </div>
